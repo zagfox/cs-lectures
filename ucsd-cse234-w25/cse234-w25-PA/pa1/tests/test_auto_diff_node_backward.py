@@ -271,6 +271,48 @@ def test_power():
         expected_outputs=[torch.tensor([[2.0, 4.0], [6.0, 8.0]])]
     )
 
+def test_mean_backward():
+    x = ad.Variable("x")
+    y = ad.mean(x, dim=1)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)
+    y_grad_val = torch.tensor([2.0, 3.0], dtype=torch.float32)
+
+    check_evaluator_output(
+        evaluator,
+        input_values={x: x_val, y_grad: y_grad_val},
+        expected_outputs=[
+            torch.tensor(
+                [[2/3, 2/3, 2/3], [1.0, 1.0, 1.0]], dtype=torch.float32
+            )
+        ],
+    )
+
+
+def test_mean_keepdim_backward():
+    x = ad.Variable("x")
+    y = ad.mean(x, dim=1, keepdim=True)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)
+    y_grad_val = torch.tensor([[2.0], [3.0]], dtype=torch.float32)
+
+    check_evaluator_output(
+        evaluator,
+        input_values={x: x_val, y_grad: y_grad_val},
+        expected_outputs=[
+            torch.tensor(
+                [[2/3, 2/3, 2/3], [1.0, 1.0, 1.0]], dtype=torch.float32
+            )
+        ],
+    )
+
+
 if __name__ == "__main__":
     #test_mul()
     #test_div()
@@ -283,5 +325,7 @@ if __name__ == "__main__":
     #test_transpose()
     #test_broadcast()
     #test_sqrt()
-    test_power()
+    test_mean_backward()
+    test_mean_keepdim_backward()
+    #test_power()
 

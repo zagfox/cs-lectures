@@ -186,6 +186,27 @@ def test_power():
         torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32)
     )
 
+def test_mean():
+    x = ad.Variable("x")
+    y = ad.mean(x, dim=1)
+
+    check_compute_output(
+        y,
+        [torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)],
+        torch.tensor([2.0, 5.0], dtype=torch.float32),
+    )
+
+
+def test_mean_keepdim():
+    x = ad.Variable("x")
+    y = ad.mean(x, dim=1, keepdim=True)
+
+    check_compute_output(
+        y,
+        [torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)],
+        torch.tensor([[2.0], [5.0]], dtype=torch.float32),
+    )
+
 if __name__ == "__main__":
     #test_mul()
     #test_mul_by_const()
@@ -198,5 +219,7 @@ if __name__ == "__main__":
     #test_matmul_3d()
     #test_transpose()
     #test_broadcast()
-    test_power()
+    #test_power()
+    test_mean()
+    test_mean_keepdim()
     #test_sqrt()

@@ -657,10 +657,15 @@ class MeanOp(Op):
 
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         assert len(input_values) == 1
-        """TODO: your code here"""
+        return input_values[0].mean(dim=node.attrs['dim'], keepdim=node.attrs['keepdim'])
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
-        """TODO: your code here"""
+        N = sum_op(ones_like(node.inputs[0]), dim=node.attrs['dim'], keepdim=node.attrs['keepdim'])
+        if node.attrs["keepdim"]:
+            return [expand_as(output_grad / N, node.inputs[0])]
+        else:
+            return [expand_as_3d(output_grad / N, node.inputs[0])]
+
 
 # Create global instances of ops.
 # Your implementation should just use these instances, rather than creating new instances.
