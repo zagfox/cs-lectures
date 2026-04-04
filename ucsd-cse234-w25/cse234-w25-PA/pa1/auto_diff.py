@@ -535,11 +535,14 @@ class MatMulOp(Op):
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         """Return the matrix multiplication result of input values."""
         assert len(input_values) == 2
-        """TODO: your code here"""
+        return torch.matmul(input_values[0], input_values[1])
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """Given gradient of matmul node, return partial adjoint to each input."""
-        """TODO: your code here"""
+        A, B = node.inputs[0], node.inputs[1]
+        grad_A = matmul(output_grad, transpose(B, -2, -1))
+        grad_B = matmul(transpose(A, -2, -1), output_grad)
+        return [grad_A, grad_B]
 
 
 class SoftmaxOp(Op):
@@ -556,11 +559,15 @@ class SoftmaxOp(Op):
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         """Return softmax of input along specified dimension."""
         assert len(input_values) == 1
-        """TODO: your code here"""
+        return torch.softmax(input_values[0], dim=node.attrs["dim"])
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """Given gradient of softmax node, return partial adjoint to input."""
-        """TODO: your code here"""
+        # S = softmax(x); dx = S * (output_grad - sum(output_grad * S, keepdim=True))
+        dim = node.attrs["dim"]
+        S = node
+        dot = sum_op(output_grad * S, dim=dim, keepdim=True)
+        return [S * (output_grad - dot)]
 
 
 class LayerNormOp(Op):
@@ -577,14 +584,47 @@ class LayerNormOp(Op):
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         """Return layer normalized input."""
         assert len(input_values) == 1
-        """TODO: your code here"""
+        return torch.layer_norm(
+            input_values[0],
+            normalized_shape=node.attrs["normalized_shape"],
+            eps=node.attrs["eps"],
+        )
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """
-        Given gradient of the LayerNorm node wrt its output, return partial 
+        Given gradient of the LayerNorm node wrt its output, return partial
         adjoint (gradient) wrt the input x.
         """
-        """TODO: your code here"""
+        # normalized_shape determines which dims are normalized (the last dims)
+        normalized_shape = node.attrs["normalized_shape"]
+        N = 1
+        for s in normalized_shape:
+            N *= s
+        # dim indices to reduce over (last len(normalized_shape) dims)
+        ndim = len(normalized_shape)
+        dim = tuple(range(-ndim, 0))
+
+        # x_hat is the forward output of this node (= (x - mean) / std)
+        x_hat = node
+
+        # dx = (1/N) * (1/std) * [N*dy - sum(dy) - x_hat * sum(dy * x_hat)]
+        # We don't have std directly, but we can recover it:
+        #   x_hat = (x - mu) / std  =>  std = (x - mu) / x_hat
+        # Instead, note that std² = mean(x_hat² * std²) ... this gets circular.
+        # Use the fact that for the normalized output:
+        #   var(x_hat) ≈ 1, so we recompute std from x via the stored eps.
+        # Cleaner: recompute std symbolically from x (node.inputs[0]).
+        x = node.inputs[0]
+        mean_x = mean(x, dim=dim, keepdim=True)
+        diff = x - mean_x
+        var_x = mean(diff * diff, dim=dim, keepdim=True)
+        std = sqrt(var_x + node.attrs["eps"])
+
+        sum_dy = sum_op(output_grad, dim=dim, keepdim=True)
+        sum_dy_xhat = sum_op(output_grad * x_hat, dim=dim, keepdim=True)
+
+        dx = (output_grad - sum_dy * (1.0 / N) - x_hat * sum_dy_xhat * (1.0 / N)) / std
+        return [dx]
 
 class ReLUOp(Op):
     """ReLU activation function."""
@@ -786,4 +826,36 @@ def gradients(output_node: Node, nodes: List[Node]) -> List[Node]:
     grad_nodes: List[Node]
         A list of gradient nodes, one for each input nodes respectively.
     """
-    """TODO: your code here"""
+    # Map each node to the list of gradient contributions flowing into it
+    node_to_grad_list: Dict[Node, List[Node]] = {}
+    node_to_grad_list[output_node] = [ones_like(output_node)]
+
+    for node in reversed(topological_sort(output_node)):
+        # Sum all incoming gradient contributions
+        grad_list = node_to_grad_list.get(node, [])
+        if not grad_list:
+            continue
+        output_grad = grad_list[0]
+        for g in grad_list[1:]:
+            output_grad = add(output_grad, g)
+
+        if isinstance(node.op, PlaceholderOp):
+            continue
+
+        # Propagate gradient to each input
+        input_grads = node.op.gradient(node, output_grad)
+        for inp, inp_grad in zip(node.inputs, input_grads):
+            node_to_grad_list.setdefault(inp, []).append(inp_grad)
+
+    # Collect and sum gradients for the requested nodes
+    result = []
+    for node in nodes:
+        grad_list = node_to_grad_list.get(node, [])
+        if not grad_list:
+            result.append(zeros_like(node))
+        else:
+            g = grad_list[0]
+            for contrib in grad_list[1:]:
+                g = add(g, contrib)
+            result.append(g)
+    return result
