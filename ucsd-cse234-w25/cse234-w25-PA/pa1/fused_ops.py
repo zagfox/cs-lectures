@@ -32,13 +32,23 @@ class MatMulLayerNormOp(Op):
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         """Return the fused matmul and layer normalization result."""
         assert len(input_values) == 2
-        """TODO: your code here"""
-        raise NotImplementedError
+        matmul_result = torch.matmul(input_values[0], input_values[1])
+        return torch.layer_norm(
+            matmul_result,
+            normalized_shape=node.attrs["normalized_shape"],
+            eps=node.attrs["eps"],
+        )
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """Given gradient of fused node, return partial adjoints to each input."""
-        """TODO: your code here"""
-        raise NotImplementedError
+        A, B = node.inputs[0], node.inputs[1]
+        # Reconstruct sub-graph: C = A @ B, Y_ln = LayerNorm(C)
+        C = matmul(A, B)
+        Y_ln = layernorm(C, node.attrs["normalized_shape"], node.attrs["eps"])
+        # Gradient through LayerNorm: dL/dC (symbolic, uses mean/sqrt/sum_op ops)
+        dC = layernorm.gradient(Y_ln, output_grad)[0]
+        # Gradient through MatMul: dL/dA and dL/dB
+        return matmul.gradient(C, dC)
 
 
 class MatMulSoftmaxOp(Op):
@@ -62,14 +72,19 @@ class MatMulSoftmaxOp(Op):
     def compute(self, node: Node, input_values: List[torch.Tensor]) -> torch.Tensor:
         """Return the fused matmul and softmax result."""
         assert len(input_values) == 2
-        """TODO: your code here"""
-        raise NotImplementedError
+        matmul_result = torch.matmul(input_values[0], input_values[1])
+        return torch.softmax(matmul_result, dim=node.attrs["dim"])
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """Given gradient of fused node, return partial adjoints to each input."""
-        # First compute the forward pass result we need for softmax gradient
-        """TODO: your code here"""
-        raise NotImplementedError
+        A, B = node.inputs[0], node.inputs[1]
+        # Reconstruct sub-graph: C = A @ B, S = softmax(C)
+        C = matmul(A, B)
+        S = softmax(C, dim=node.attrs["dim"])
+        # Gradient through softmax: dL/dC
+        dC = softmax.gradient(S, output_grad)[0]
+        # Gradient through MatMul: dL/dA and dL/dB
+        return matmul.gradient(C, dC)
 
 # Create global instances of the fused ops
 matmul_layernorm = MatMulLayerNormOp()
