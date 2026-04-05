@@ -66,6 +66,50 @@ def single_head_attention(
     return ad.matmul(A, V)                         # (batch, seq, model_dim)
 
 
+def encoder_layer(
+    X: ad.Node,
+    W_Q: ad.Node, W_K: ad.Node, W_V: ad.Node,
+    W_O: ad.Node,
+    W_1: ad.Node, b_1: ad.Node,
+    model_dim: int,
+    eps: float,
+) -> ad.Node:
+    """Single encoder layer: self-attention + output projection + LayerNorm + FFN + LayerNorm.
+
+    Parameters
+    ----------
+    X: ad.Node
+        Input, shape (batch_size, seq_length, model_dim).
+    W_Q, W_K, W_V: ad.Node
+        Attention projection weights, each (model_dim, model_dim).
+    W_O: ad.Node
+        Output projection weight, shape (model_dim, model_dim). No bias.
+    W_1: ad.Node
+        FFN first-layer weight, shape (model_dim, model_dim).
+    b_1: ad.Node
+        FFN first-layer bias, shape (model_dim,).
+    model_dim: int
+        Hidden dimension (also used as d_k for attention scaling).
+    eps: float
+        LayerNorm epsilon.
+
+    Returns
+    -------
+    output: ad.Node
+        Shape (batch_size, seq_length, model_dim).
+    """
+    # Self-attention then output projection
+    attn = single_head_attention(X, W_Q, W_K, W_V, model_dim)  # (batch, seq, model_dim)
+    attn_proj = ad.matmul(attn, W_O)                            # (batch, seq, model_dim)
+    ln1 = ad.layernorm(attn_proj, [model_dim], eps)             # (batch, seq, model_dim)
+
+    # Position-wise feed-forward: Linear → ReLU → LayerNorm
+    ff = ad.relu(linear_layer(ln1, W_1, b_1))                   # (batch, seq, model_dim)
+    ln2 = ad.layernorm(ff, [model_dim], eps)                    # (batch, seq, model_dim)
+
+    return ln2
+
+
 def transformer(X: ad.Node, nodes: List[ad.Node],
                       model_dim: int, seq_length: int, eps, batch_size, num_classes) -> ad.Node:
     """Construct the computational graph for a single transformer layer with sequence classification.
