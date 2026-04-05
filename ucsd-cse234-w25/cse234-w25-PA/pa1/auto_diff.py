@@ -371,7 +371,11 @@ class ExpandAsOp3d(Op):
         """Return the broadcasted tensor."""
         assert len(input_values) == 2
         input_tensor, target_tensor = input_values
-        return input_tensor.unsqueeze(1).expand_as(target_tensor)
+        result = input_tensor
+        while result.dim() < target_tensor.dim():
+            insert_pos = 1 if result.dim() > 0 else 0
+            result = result.unsqueeze(insert_pos)
+        return result.expand_as(target_tensor)
 
     def gradient(self, node: Node, output_grad: Node) -> List[Node]:
         """Given the gradient of the broadcast node, compute partial adjoint to input."""

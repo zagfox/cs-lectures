@@ -174,8 +174,9 @@ def softmax_loss(Z: ad.Node, y_one_hot: ad.Node, batch_size: int) -> ad.Node:
     softmax loss function usually does not take the batch size as input.
     Try to think about why our softmax loss may need the batch size.
     """
-    """TODO: Your code here"""
-
+    log_probs = ad.log(ad.softmax(Z, dim=-1))          # (batch, num_classes)
+    per_sample = ad.sum_op(y_one_hot * log_probs, dim=1) # (batch,)
+    return ad.sum_op(per_sample, dim=0) * (-1.0 / batch_size)  # scalar ()
 
 
 def sgd_epoch(
@@ -241,16 +242,26 @@ def sgd_epoch(
         y_batch = y[start_idx:end_idx]
         
         # Compute forward and backward passes
-        # TODO: Your code here
+        # f_run_model returns [y_predict, loss, grad_W_Q, grad_W_K, grad_W_V,
+        #                       grad_W_O, grad_W_1, grad_W_2, grad_b_1, grad_b_2]
+        result = f_run_model(X_batch, y_batch, model_weights)
+        _, loss_val, grad_W_Q, grad_W_K, grad_W_V, grad_W_O, grad_W_1, grad_W_2, grad_b_1, grad_b_2 = result
 
-        
         # Update weights and biases
-        # TODO: Your code here
-        # Hint: You can update the tensor using something like below:
-        # W_Q -= lr * grad_W_Q.sum(dim=0)
+        # 3-D weight grads (batch, in, out) → sum over batch; 2-D grad_W_2 is already correct
+        W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2 = model_weights
+        W_Q -= lr * grad_W_Q.sum(dim=0)
+        W_K -= lr * grad_W_K.sum(dim=0)
+        W_V -= lr * grad_W_V.sum(dim=0)
+        W_O -= lr * grad_W_O.sum(dim=0)
+        W_1 -= lr * grad_W_1.sum(dim=0)
+        W_2 -= lr * grad_W_2                    # pooled input is 2-D; grad already (in, out)
+        b_1 -= lr * grad_b_1.sum(dim=(0, 1))    # grad shape (batch, seq, model_dim)
+        b_2 -= lr * grad_b_2.sum(dim=0)         # grad shape (batch, num_classes)
+        model_weights = [W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2]
 
-        # Accumulate the loss
-        # TODO: Your code here
+        # Accumulate the loss (loss_val is mean over batch; scale back to sum)
+        total_loss += loss_val.item() * batch_size
 
 
     # Compute the average loss
@@ -284,17 +295,24 @@ def train_model():
     batch_size = 50
     lr = 0.02
 
-    # TODO: Define the forward graph.
+    # Define the forward graph.
+    X_node = ad.Variable(name="X")
+    W_Q_node = ad.Variable(name="W_Q")
+    W_K_node = ad.Variable(name="W_K")
+    W_V_node = ad.Variable(name="W_V")
+    W_O_node = ad.Variable(name="W_O")
+    W_1_node = ad.Variable(name="W_1")
+    W_2_node = ad.Variable(name="W_2")
+    b_1_node = ad.Variable(name="b_1")
+    b_2_node = ad.Variable(name="b_2")
+    weight_nodes = [W_Q_node, W_K_node, W_V_node, W_O_node, W_1_node, W_2_node, b_1_node, b_2_node]
 
-    y_predict: ad.Node = ... # TODO: The output of the forward pass
+    y_predict: ad.Node = transformer(X_node, weight_nodes, model_dim, seq_length, eps, batch_size, num_classes)
     y_groundtruth = ad.Variable(name="y")
     loss: ad.Node = softmax_loss(y_predict, y_groundtruth, batch_size)
-    
-    # TODO: Construct the backward graph.
-    
 
-    # TODO: Create the evaluator.
-    grads: List[ad.Node] = ... # TODO: Define the gradient nodes here
+    # Construct the backward graph.
+    grads: List[ad.Node] = ad.gradients(loss, weight_nodes)
     evaluator = ad.Evaluator([y_predict, loss, *grads])
     test_evaluator = ad.Evaluator([y_predict])
 
@@ -338,15 +356,17 @@ def train_model():
     b_1_val = np.random.uniform(-stdv, stdv, (model_dim,))
     b_2_val = np.random.uniform(-stdv, stdv, (num_classes,))
 
-    def f_run_model(model_weights):
+    def f_run_model(X_batch, y_batch, model_weights):
         """The function to compute the forward and backward graph.
         It returns the logits, loss, and gradients for model weights.
         """
+        W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2 = model_weights
         result = evaluator.run(
             input_values={
-                # TODO: Fill in the mapping from variable to tensor
-
-
+                X_node: X_batch.double(),
+                y_groundtruth: y_batch.double(),
+                W_Q_node: W_Q, W_K_node: W_K, W_V_node: W_V, W_O_node: W_O,
+                W_1_node: W_1, W_2_node: W_2, b_1_node: b_1, b_2_node: b_2,
             }
         )
         return result
@@ -363,10 +383,11 @@ def train_model():
             if start_idx + batch_size> num_examples:continue
             end_idx = min(start_idx + batch_size, num_examples)
             X_batch = X_val[start_idx:end_idx, :max_len]
+            W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2 = model_weights
             logits = test_evaluator.run({
-                # TODO: Fill in the mapping from variable to tensor
-
-
+                X_node: X_batch.double(),
+                W_Q_node: W_Q, W_K_node: W_K, W_V_node: W_V, W_O_node: W_O,
+                W_1_node: W_1, W_2_node: W_2, b_1_node: b_1, b_2_node: b_2,
             })
             all_logits.append(logits[0])
         # Concatenate all logits and return the predicted classes
@@ -376,7 +397,12 @@ def train_model():
 
     # Train the model.
     X_train, X_test, y_train, y_test= torch.tensor(X_train), torch.tensor(X_test), torch.DoubleTensor(y_train), torch.DoubleTensor(y_test)
-    model_weights: List[torch.Tensor] = [] # TODO: Initialize the model weights here
+    model_weights: List[torch.Tensor] = [
+        torch.DoubleTensor(W_Q_val), torch.DoubleTensor(W_K_val),
+        torch.DoubleTensor(W_V_val), torch.DoubleTensor(W_O_val),
+        torch.DoubleTensor(W_1_val), torch.DoubleTensor(W_2_val),
+        torch.DoubleTensor(b_1_val), torch.DoubleTensor(b_2_val),
+    ]
     for epoch in range(num_epochs):
         X_train, y_train = shuffle(X_train, y_train)
         model_weights, loss_val = sgd_epoch(
