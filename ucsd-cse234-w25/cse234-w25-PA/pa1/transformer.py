@@ -1,4 +1,5 @@
 import functools
+import math
 from typing import Callable, Tuple, List
 
 import numpy as np
@@ -32,6 +33,37 @@ def linear_layer(X: ad.Node, W: ad.Node, b: ad.Node) -> ad.Node:
         Output node, shape (..., out_features).
     """
     return ad.matmul(X, W) + b
+
+
+def single_head_attention(
+    X: ad.Node, W_Q: ad.Node, W_K: ad.Node, W_V: ad.Node, model_dim: int
+) -> ad.Node:
+    """Single-head scaled dot-product attention.
+
+    Parameters
+    ----------
+    X: ad.Node
+        Input node, shape (batch_size, seq_length, model_dim).
+    W_Q, W_K, W_V: ad.Node
+        Projection weight nodes, each shape (model_dim, model_dim).
+    model_dim: int
+        Dimension d_k used for scaling.
+
+    Returns
+    -------
+    output: ad.Node
+        Attention output, shape (batch_size, seq_length, model_dim).
+    """
+    Q = ad.matmul(X, W_Q)                          # (batch, seq, model_dim)
+    K = ad.matmul(X, W_K)                          # (batch, seq, model_dim)
+    V = ad.matmul(X, W_V)                          # (batch, seq, model_dim)
+
+    K_T = ad.transpose(K, -2, -1)                  # (batch, model_dim, seq)
+    scores = ad.matmul(Q, K_T)                     # (batch, seq, seq)
+    scores_scaled = ad.mul_by_const(scores, 1.0 / math.sqrt(model_dim))
+    A = ad.softmax(scores_scaled, dim=-1)          # (batch, seq, seq)
+
+    return ad.matmul(A, V)                         # (batch, seq, model_dim)
 
 
 def transformer(X: ad.Node, nodes: List[ad.Node],

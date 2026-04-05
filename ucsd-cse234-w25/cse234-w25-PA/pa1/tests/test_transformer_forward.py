@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 import auto_diff as ad
-from transformer import linear_layer
+from transformer import linear_layer, single_head_attention
 
 
 def check_evaluator_output(
@@ -76,7 +76,53 @@ def test_linear_layer_zero_bias():
     )
 
 
+def test_single_head_attention_output_shape():
+    """Output shape should be (batch, seq, model_dim)."""
+    batch, seq, model_dim = 2, 4, 8
+    X = ad.Variable("X")
+    W_Q, W_K, W_V = ad.Variable("W_Q"), ad.Variable("W_K"), ad.Variable("W_V")
+    y = single_head_attention(X, W_Q, W_K, W_V, model_dim)
+    evaluator = ad.Evaluator([y])
+
+    X_val = torch.randn(batch, seq, model_dim, dtype=torch.float64)
+    W_val = torch.randn(model_dim, model_dim, dtype=torch.float64)
+
+    result = evaluator.run({X: X_val, W_Q: W_val, W_K: W_val.clone(), W_V: W_val.clone()})
+    assert result[0].shape == (batch, seq, model_dim)
+
+
+def test_single_head_attention_matches_pytorch():
+    """Forward output matches manual PyTorch computation."""
+    import math
+    batch, seq, model_dim = 2, 3, 4
+    X = ad.Variable("X")
+    W_Q, W_K, W_V = ad.Variable("W_Q"), ad.Variable("W_K"), ad.Variable("W_V")
+    y = single_head_attention(X, W_Q, W_K, W_V, model_dim)
+    evaluator = ad.Evaluator([y])
+
+    torch.manual_seed(0)
+    X_val = torch.randn(batch, seq, model_dim, dtype=torch.float64)
+    WQ_val = torch.randn(model_dim, model_dim, dtype=torch.float64)
+    WK_val = torch.randn(model_dim, model_dim, dtype=torch.float64)
+    WV_val = torch.randn(model_dim, model_dim, dtype=torch.float64)
+
+    Q = X_val @ WQ_val
+    K = X_val @ WK_val
+    V = X_val @ WV_val
+    scores = Q @ K.transpose(-2, -1) / math.sqrt(model_dim)
+    A = torch.softmax(scores, dim=-1)
+    expected = A @ V
+
+    check_evaluator_output(
+        evaluator,
+        {X: X_val, W_Q: WQ_val, W_K: WK_val, W_V: WV_val},
+        [expected],
+    )
+
+
 if __name__ == "__main__":
     test_linear_layer_2d()
     test_linear_layer_3d()
     test_linear_layer_zero_bias()
+    test_single_head_attention_output_shape()
+    test_single_head_attention_matches_pytorch()
