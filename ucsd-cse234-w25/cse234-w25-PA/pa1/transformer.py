@@ -13,7 +13,28 @@ from torchvision import datasets, transforms
 
 max_len = 28
 
-def transformer(X: ad.Node, nodes: List[ad.Node], 
+
+def linear_layer(X: ad.Node, W: ad.Node, b: ad.Node) -> ad.Node:
+    """Linear transformation: output = X @ W + b
+
+    Parameters
+    ----------
+    X: ad.Node
+        Input node, shape (..., in_features).
+    W: ad.Node
+        Weight node, shape (in_features, out_features).
+    b: ad.Node
+        Bias node, shape (out_features,).
+
+    Returns
+    -------
+    output: ad.Node
+        Output node, shape (..., out_features).
+    """
+    return ad.matmul(X, W) + b
+
+
+def transformer(X: ad.Node, nodes: List[ad.Node],
                       model_dim: int, seq_length: int, eps, batch_size, num_classes) -> ad.Node:
     """Construct the computational graph for a single transformer layer with sequence classification.
 
