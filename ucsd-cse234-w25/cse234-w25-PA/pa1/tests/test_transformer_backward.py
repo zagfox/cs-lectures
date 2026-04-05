@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 import auto_diff as ad
-from transformer import linear_layer, single_head_attention, encoder_layer
+from transformer import linear_layer, single_head_attention, encoder_layer, transformer
 
 
 def check_evaluator_output(
@@ -251,6 +251,84 @@ def test_encoder_layer_grad_W_O():
     torch.testing.assert_close(result[0].sum(dim=0), WO_t.grad, atol=1e-4, rtol=1e-4)
 
 
+def _make_transformer_vals(batch, seq, model_dim, num_classes, seed=0):
+    torch.manual_seed(seed)
+    return {
+        "X":   torch.randn(batch, seq, model_dim, dtype=torch.float64),
+        "W_Q": torch.randn(model_dim, model_dim, dtype=torch.float64),
+        "W_K": torch.randn(model_dim, model_dim, dtype=torch.float64),
+        "W_V": torch.randn(model_dim, model_dim, dtype=torch.float64),
+        "W_O": torch.randn(model_dim, model_dim, dtype=torch.float64),
+        "W_1": torch.randn(model_dim, model_dim, dtype=torch.float64),
+        "W_2": torch.randn(model_dim, num_classes, dtype=torch.float64),
+        "b_1": torch.randn(model_dim, dtype=torch.float64),
+        "b_2": torch.randn(num_classes, dtype=torch.float64),
+    }
+
+
+def _pytorch_transformer_loss(v, model_dim, eps):
+    """Run the full transformer forward in PyTorch and return the summed output."""
+    import math
+    Q = v["X"] @ v["W_Q"]
+    K = v["X"] @ v["W_K"]
+    V = v["X"] @ v["W_V"]
+    A = torch.softmax(Q @ K.transpose(-2, -1) / math.sqrt(model_dim), dim=-1)
+    attn_proj = (A @ V) @ v["W_O"]
+    ln1 = torch.layer_norm(attn_proj, [model_dim], eps=eps)
+    ff = torch.relu(ln1 @ v["W_1"] + v["b_1"])
+    ln2 = torch.layer_norm(ff, [model_dim], eps=eps)
+    pooled = ln2.mean(dim=1)
+    return (pooled @ v["W_2"] + v["b_2"]).sum()
+
+
+def test_transformer_grad_X():
+    """Gradient w.r.t. X matches PyTorch autograd."""
+    batch, seq, model_dim, num_classes, eps = 2, 3, 8, 4, 1e-5
+    X = ad.Variable("X")
+    W_Q, W_K, W_V = ad.Variable("W_Q"), ad.Variable("W_K"), ad.Variable("W_V")
+    W_O = ad.Variable("W_O")
+    W_1, W_2 = ad.Variable("W_1"), ad.Variable("W_2")
+    b_1, b_2 = ad.Variable("b_1"), ad.Variable("b_2")
+    nodes = [W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2]
+    y = transformer(X, nodes, model_dim, seq, eps, batch, num_classes)
+    [grad_X] = ad.gradients(y, [X])
+    evaluator = ad.Evaluator([grad_X])
+
+    v = _make_transformer_vals(batch, seq, model_dim, num_classes, seed=10)
+    v["X"] = v["X"].requires_grad_(True)
+    _pytorch_transformer_loss({k: (val.clone() if k != "X" else v["X"]) for k, val in v.items()},
+                               model_dim, eps).backward()
+    expected = v["X"].grad
+
+    input_map = {X: v["X"].detach(), W_Q: v["W_Q"], W_K: v["W_K"], W_V: v["W_V"],
+                 W_O: v["W_O"], W_1: v["W_1"], W_2: v["W_2"], b_1: v["b_1"], b_2: v["b_2"]}
+    check_evaluator_output(evaluator, input_map, [expected])
+
+
+def test_transformer_grad_W_2():
+    """Gradient w.r.t. W_2 matches PyTorch autograd (summed over batch)."""
+    batch, seq, model_dim, num_classes, eps = 2, 3, 8, 4, 1e-5
+    X = ad.Variable("X")
+    W_Q, W_K, W_V = ad.Variable("W_Q"), ad.Variable("W_K"), ad.Variable("W_V")
+    W_O = ad.Variable("W_O")
+    W_1, W_2 = ad.Variable("W_1"), ad.Variable("W_2")
+    b_1, b_2 = ad.Variable("b_1"), ad.Variable("b_2")
+    nodes = [W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2]
+    y = transformer(X, nodes, model_dim, seq, eps, batch, num_classes)
+    [grad_W2] = ad.gradients(y, [W_2])
+    evaluator = ad.Evaluator([grad_W2])
+
+    v = _make_transformer_vals(batch, seq, model_dim, num_classes, seed=11)
+    W2_t = v["W_2"].clone().requires_grad_(True)
+    vt = {**v, "W_2": W2_t}
+    _pytorch_transformer_loss(vt, model_dim, eps).backward()
+
+    input_map = {X: v["X"], W_Q: v["W_Q"], W_K: v["W_K"], W_V: v["W_V"],
+                 W_O: v["W_O"], W_1: v["W_1"], W_2: v["W_2"], b_1: v["b_1"], b_2: v["b_2"]}
+    # pooled is 2D (batch, model_dim), so grad_W2 is already (model_dim, num_classes)
+    check_evaluator_output(evaluator, input_map, [W2_t.grad])
+
+
 if __name__ == "__main__":
     test_linear_layer_grad_X()
     test_linear_layer_grad_W()
@@ -260,3 +338,5 @@ if __name__ == "__main__":
     test_single_head_attention_grad_X()
     test_encoder_layer_grad_X()
     test_encoder_layer_grad_W_O()
+    test_transformer_grad_X()
+    test_transformer_grad_W_2()

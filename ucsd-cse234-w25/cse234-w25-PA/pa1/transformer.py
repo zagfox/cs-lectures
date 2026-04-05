@@ -131,7 +131,16 @@ def transformer(X: ad.Node, nodes: List[ad.Node],
         The output of the transformer layer, averaged over the sequence length for classification, in shape (batch_size, num_classes).
     """
 
-    """TODO: Your code here"""
+    W_Q, W_K, W_V, W_O, W_1, W_2, b_1, b_2 = nodes
+
+    # Encoder layer → (batch, seq, model_dim)
+    enc = encoder_layer(X, W_Q, W_K, W_V, W_O, W_1, b_1, model_dim, eps)
+
+    # Mean-pool over sequence → (batch, model_dim)
+    pooled = ad.mean(enc, dim=1, keepdim=False)
+
+    # Classification head → (batch, num_classes)
+    return linear_layer(pooled, W_2, b_2)
 
 
 def softmax_loss(Z: ad.Node, y_one_hot: ad.Node, batch_size: int) -> ad.Node:
