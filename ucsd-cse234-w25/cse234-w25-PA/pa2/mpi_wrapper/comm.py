@@ -64,30 +64,77 @@ class Communicator(object):
         """
         A manual implementation of all-reduce using a reduce-to-root
         followed by a broadcast.
-        
+
         Each non-root process sends its data to process 0, which applies the
         reduction operator (by default, summation). Then process 0 sends the
         reduced result back to all processes.
-        
+
         The transfer cost is computed as:
           - For non-root processes: one send and one receive.
           - For the root process: (n-1) receives and (n-1) sends.
         """
-        #TODO: Your code here
+        rank = self.comm.Get_rank()
+        nprocs = self.comm.Get_size()
+        nbytes = src_array.itemsize * src_array.size
+
+        if op == MPI.MIN:
+            op_func = np.minimum
+        elif op == MPI.MAX:
+            op_func = np.maximum
+        elif op == MPI.PROD:
+            op_func = np.multiply
+        else:  # MPI.SUM default
+            op_func = np.add
+
+        if rank == 0:
+            np.copyto(dest_array, src_array)
+            buf = np.empty_like(src_array)
+            for i in range(1, nprocs):
+                self.comm.Recv(buf, source=i)
+                self.total_bytes_transferred += nbytes
+                op_func(dest_array, buf, out=dest_array)
+        else:
+            self.comm.Send(src_array, dest=0)
+            self.total_bytes_transferred += nbytes
+
+        self.comm.Bcast(dest_array, root=0)
+        self.total_bytes_transferred += nbytes * (nprocs - 1)
 
     def myAlltoall(self, src_array, dest_array):
         """
         A manual implementation of all-to-all where each process sends a
         distinct segment of its source array to every other process.
-        
+
         It is assumed that the total length of src_array (and dest_array)
         is evenly divisible by the number of processes.
-        
+
         The algorithm loops over the ranks:
           - For the local segment (when destination == self), a direct copy is done.
           - For all other segments, the process exchanges the corresponding
             portion of its src_array with the other process via Sendrecv.
-            
+
         The total data transferred is updated for each pairwise exchange.
         """
-        #TODO: Your code here
+        nprocs = self.comm.Get_size()
+        rank = self.comm.Get_rank()
+
+        assert src_array.size % nprocs == 0, (
+            "src_array size must be divisible by the number of processes"
+        )
+        assert dest_array.size % nprocs == 0, (
+            "dest_array size must be divisible by the number of processes"
+        )
+
+        seg_size = src_array.size // nprocs
+        seg_bytes = src_array.itemsize * seg_size
+
+        for i in range(nprocs):
+            src_seg = src_array[i * seg_size:(i + 1) * seg_size]
+            if i == rank:
+                dest_array[i * seg_size:(i + 1) * seg_size] = src_seg
+            else:
+                send_buf = np.ascontiguousarray(src_seg)
+                recv_buf = np.empty(seg_size, dtype=src_array.dtype)
+                self.comm.Sendrecv(send_buf, dest=i, recvbuf=recv_buf, source=i)
+                dest_array[i * seg_size:(i + 1) * seg_size] = recv_buf
+                self.total_bytes_transferred += seg_bytes * 2
