@@ -79,7 +79,19 @@ def naive_collect_forward_input(
     After gathering, the full input should have shape:
       (batch_size, seq_length, part_in_dim * mp_size)
     """
-    #TODO: Your code here
+    batch_size, seq_length, part_dim = x.shape
+
+    local_flat = np.ascontiguousarray(x.flatten())
+    gathered = np.empty(mp_size * local_flat.size, dtype=x.dtype)
+    mp_comm.Allgather(local_flat, gathered)
+
+    # gathered = [rank0_flat, rank1_flat, ...], each of size batch*seq*part_dim
+    # reshape to (mp_size, batch, seq, part_dim), then move mp_size axis next to
+    # part_dim so the last two axes concatenate correctly
+    gathered = gathered.reshape(mp_size, batch_size, seq_length, part_dim)
+    collected_x = np.ascontiguousarray(
+        gathered.transpose(1, 2, 0, 3)
+    ).reshape(batch_size, seq_length, mp_size * part_dim)
     return collected_x
 
 
@@ -96,7 +108,16 @@ def naive_collect_forward_output(
     After gathering, the full output should have shape:
       (batch_size, seq_length, part_out_dim * mp_size)
     """
-    #TODO: Your code here
+    batch_size, seq_length, part_dim = out.shape
+
+    local_flat = np.ascontiguousarray(out.flatten())
+    gathered = np.empty(mp_size * local_flat.size, dtype=out.dtype)
+    mp_comm.Allgather(local_flat, gathered)
+
+    gathered = gathered.reshape(mp_size, batch_size, seq_length, part_dim)
+    collected_out = np.ascontiguousarray(
+        gathered.transpose(1, 2, 0, 3)
+    ).reshape(batch_size, seq_length, mp_size * part_dim)
     return collected_out
 
 def naive_collect_backward_output(
@@ -106,30 +127,32 @@ def naive_collect_backward_output(
 ):
     """
     Collect the fc output layer's output gradient for the local MP node.
-    
-    In our setup, the full output_grad is a 3-D tensor of shape 
+
+    In our setup, the full output_grad is a 3-D tensor of shape
         (batch_size, seq_length, out_dim),
     and the fully connected layer's weight is partitioned along out_dim.
     Therefore, we split output_grad along axis=2 into mp_size parts and
     return the part corresponding to mp_group_idx.
-    
+
     Parameters
     ----------
     output_grad : np.ndarray
-        The full output gradient from fc_o with shape 
+        The full output gradient from fc_o with shape
         (batch_size, seq_length, out_dim).
     mp_group_idx : int
         The current model parallel node's index.
     mp_size : int
         The total number of model parallel nodes.
-    
+
     Returns
     -------
     collected_output_grad : np.ndarray
-        The local output gradient for this MP node with shape 
+        The local output gradient for this MP node with shape
         (batch_size, seq_length, out_dim // mp_size).
     """
-    #TODO: Your code here
+    part_dim = output_grad.shape[2] // mp_size
+    start = mp_group_idx * part_dim
+    return output_grad[:, :, start:start + part_dim].copy()
 
 
 def naive_collect_backward_x(
@@ -140,28 +163,42 @@ def naive_collect_backward_x(
     """
     Use reduce-scatter / all-to-all to combine the contributions for grad_x from all nodes
     and scatter the reduced result along the input feature dimension.
-    
+
     The grad_x tensor (gradient with respect to fc_o's input) has shape
         (batch_size, seq_length, in_dim),
-    and the fc_o's weight matrix is sharded along the in_dim axis. In the 
-    backward pass, each node computes a local grad_x and then these must be 
+    and the fc_o's weight matrix is sharded along the in_dim axis. In the
+    backward pass, each node computes a local grad_x and then these must be
     summed across nodes. Instead of summing the full tensor and then slicing,
     we perform a reduce-scatter / all-to-all.
-    
+
     Parameters
     ----------
     grad_x : np.ndarray
-        The locally computed grad_x for fc_o, of shape 
+        The locally computed grad_x for fc_o, of shape
         (batch_size, seq_length, in_dim).
     mp_comm :
         The model parallel communicator. It is assumed to expose methods such as reduce-scatter / all-to-all.
     mp_size : int
         The total number of model parallel nodes.
-    
+
     Returns
     -------
     collected_grad_x : np.ndarray
-        The reduced and scattered grad_x with shape 
+        The reduced and scattered grad_x with shape
         (batch_size, seq_length, in_dim // mp_size).
     """
-    #TODO: Your code here
+    batch_size, seq_length, in_dim = grad_x.shape
+    part_dim = in_dim // mp_size
+
+    # Rearrange so each rank's contiguous segment sits in its own block:
+    # (batch, seq, mp_size, part_dim) -> (mp_size, batch, seq, part_dim) -> flat
+    # After Reduce_scatter_block, rank r gets the sum of block r across all ranks,
+    # which equals global_sum[:, :, r*part_dim:(r+1)*part_dim].
+    send = np.ascontiguousarray(
+        grad_x.reshape(batch_size, seq_length, mp_size, part_dim)
+               .transpose(2, 0, 1, 3)
+    ).flatten()
+    recv = np.empty(batch_size * seq_length * part_dim, dtype=grad_x.dtype)
+    mp_comm.Reduce_scatter_block(send, recv, MPI.SUM)
+
+    return recv.reshape(batch_size, seq_length, part_dim)
